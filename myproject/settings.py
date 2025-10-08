@@ -43,6 +43,7 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
+    "daphne",
     "aiapp",
     'corsheaders',
     'rest_framework',  # Ensure this is included for DRF
