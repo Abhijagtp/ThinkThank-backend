@@ -786,3 +786,14 @@ class UserCommentsView(APIView):
         comments = Comment.objects.filter(user=request.user)
         serializer = CommentSerializer(comments, many=True)
         return Response(serializer.data)
+    
+
+
+
+# health check -
+from django.http import JsonResponse
+
+def health_check(request):
+    return JsonResponse({"status": "ok"}, status=200)
+
+

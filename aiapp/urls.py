@@ -1,5 +1,5 @@
 from django.urls import path
-from .views import RegisterView, LoginView, LogoutView,DocumentUploadView,DocumentListView,DocumentAnalysisView,ChatHistoryView,DocumentComparisonView,ComparisonHistoryView,SavedNoteListCreateView,SavedNoteDetailView,PostInteractionView,PostListCreateView,CommentListCreateView,UserCommentsView,UserView
+from .views import RegisterView, LoginView, LogoutView,DocumentUploadView,DocumentListView,DocumentAnalysisView,ChatHistoryView,DocumentComparisonView,ComparisonHistoryView,SavedNoteListCreateView,SavedNoteDetailView,PostInteractionView,PostListCreateView,CommentListCreateView,UserCommentsView,UserView,health_check
 from rest_framework_simplejwt.views import TokenRefreshView
 
 urlpatterns = [
@@ -20,5 +20,6 @@ urlpatterns = [
     path('posts/<int:post_id>/interact/', PostInteractionView.as_view(), name='post-interact'),
     path('posts/<int:post_id>/comments/', CommentListCreateView.as_view(), name='comment-list-create'),
     path('comments/', UserCommentsView.as_view(), name='user-comments'),
-    path('users/me/', UserView.as_view(), name='user-profile')
+    path('users/me/', UserView.as_view(), name='user-profile'),
+    path('health/', health_check.as_view, name='health_check')
 ]
