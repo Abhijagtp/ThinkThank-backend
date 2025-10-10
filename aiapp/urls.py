@@ -21,5 +21,5 @@ urlpatterns = [
     path('posts/<int:post_id>/comments/', CommentListCreateView.as_view(), name='comment-list-create'),
     path('comments/', UserCommentsView.as_view(), name='user-comments'),
     path('users/me/', UserView.as_view(), name='user-profile'),
-    path('health/', health_check.as_view, name='health_check')
+    path('health/', health_check, name='health_check')
 ]
