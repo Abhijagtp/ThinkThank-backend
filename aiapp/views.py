@@ -9,7 +9,8 @@ from django.utils.decorators import method_decorator
 from .serializers import UserSerializer, LoginSerializer, DocumentSerializer,ChatHistorySerializer,ComparisonHistorySerializer,SavedNoteSerializer,PostSerializer,CommentSerializer
 from .models import Document,ComparisonHistory,SavedNote,Post,PostInteraction,Comment
 import logging
-
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.parsers import MultiPartParser 
 # Set up logging
 logger = logging.getLogger(__name__)
 
@@ -93,38 +94,47 @@ class UserView(APIView):
 
 class DocumentUploadView(APIView):
     permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser]  # Use the class, not a string
 
     def post(self, request):
         files = request.FILES.getlist('files')
         if not files:
-            print("No files received in request.FILES:", request.FILES)  # Debug
+            logger.warning("No files received in request.FILES")
             return Response({'error': 'No files provided'}, status=status.HTTP_400_BAD_REQUEST)
 
         responses = []
+        allowed_types = ['pdf', 'docx', 'doc', 'csv', 'xlsx']
+        
         for file in files:
-            allowed_types = ['pdf', 'docx', 'doc', 'csv', 'xlsx']
             file_type = file.name.split('.')[-1].lower()
             if file_type not in allowed_types:
                 responses.append({'name': file.name, 'error': 'Unsupported file type'})
                 continue
-            if file.size > 10 * 1024 * 1024:
+            if file.size > 10 * 1024 * 1024:  # 10MB limit
                 responses.append({'name': file.name, 'error': 'File size exceeds 10MB'})
                 continue
 
-            data = {
-                'user': request.user,  # Include user in data
-                'file': file,
-                'name': file.name,
-            }
-            serializer = DocumentSerializer(data=data, context={'request': request})  # Pass request context
-            if serializer.is_valid():
-                serializer.save()
-                responses.append(serializer.data)
-            else:
-                responses.append({'name': file.name, 'error': serializer.errors})
+            try:
+                # Prepare data for serializer, including the original file object
+                data = {
+                    'name': file.name,
+                    'file': file,  # Pass the original file object
+                }
+                serializer = DocumentSerializer(data=data, context={'request': request})
+                if serializer.is_valid():
+                    serializer.save(user=request.user)  # Set user explicitly
+                    responses.append(serializer.data)
+                else:
+                    logger.error(f"Serializer error for {file.name}: {serializer.errors}")
+                    responses.append({'name': file.name, 'error': serializer.errors})
+            except Exception as e:
+                logger.error(f"Upload failed for {file.name}: {str(e)}")
+                responses.append({'name': file.name, 'error': 'Upload failed'})
 
+        if all('error' in resp for resp in responses):
+            return Response(responses, status=status.HTTP_400_BAD_REQUEST)
         return Response(responses, status=status.HTTP_201_CREATED)
-
+    
 class DocumentListView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -208,7 +218,7 @@ class DocumentAnalysisView(APIView):
 
         try:
             system_prompt = (
-                "You are a research assistant powered by Grok 4 Fast. Analyze the provided document content "
+                "You are a research assistant powered by DeepSeek V3.1. Analyze the provided document content "
                 "and respond to the user's query with concise, insightful answers. Include key metrics, trends, "
                 "or summaries where relevant. Use the full context for accurate analysis. "
                 "Format the response as follows:\n"
@@ -267,7 +277,7 @@ class DocumentAnalysisView(APIView):
                 # Continue to avoid blocking AI response
 
             response = client.chat.completions.create(
-                model="x-ai/grok-4-fast:free",
+                model="deepseek/deepseek-chat-v3.1:free",
                 messages=messages,
                 max_tokens=1000,
                 temperature=0.7,
@@ -337,6 +347,7 @@ class DocumentAnalysisView(APIView):
             logger.error(f"OpenRouter API error: {str(e)}")
             return Response({'error': 'Failed to analyze document'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+
 class ChatHistoryView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -403,7 +414,7 @@ class DocumentComparisonView(APIView):
 
         try:
             system_prompt = (
-                "You are a research assistant powered by Grok 4 Fast. Compare the two provided documents and provide a concise comparison. "
+                "You are a research assistant powered by DeepSeek V3.1. Compare the two provided documents and provide a concise comparison. "
                 "Identify key differences, trends, and insights. Format the response as follows:\n"
             )
             if output_format == 'json':
@@ -439,7 +450,7 @@ class DocumentComparisonView(APIView):
             ]
 
             response = client.chat.completions.create(
-                model="x-ai/grok-4-fast:free",
+                model="deepseek/deepseek-chat-v3.1:free",
                 messages=messages,
                 max_tokens=1500,
                 temperature=0.7,
@@ -509,6 +520,7 @@ class DocumentComparisonView(APIView):
             }, status=status.HTTP_200_OK)
         except Exception as e:
             logger.error(f"OpenRouter API error: {str(e)}")
+            return Response({'error': 'Failed to compare documents'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 class ComparisonHistoryView(APIView):
     permission_classes = [IsAuthenticated]
