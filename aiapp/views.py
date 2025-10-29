@@ -94,7 +94,7 @@ class UserView(APIView):
 
 class DocumentUploadView(APIView):
     permission_classes = [IsAuthenticated]
-    parser_classes = [MultiPartParser]  # Use the class, not a string
+    parser_classes = [MultiPartParser]
 
     def post(self, request):
         files = request.FILES.getlist('files')
@@ -104,36 +104,49 @@ class DocumentUploadView(APIView):
 
         responses = []
         allowed_types = ['pdf', 'docx', 'doc', 'csv', 'xlsx']
-        
+
         for file in files:
             file_type = file.name.split('.')[-1].lower()
             if file_type not in allowed_types:
+                logger.warning(f"Unsupported file type for {file.name}: {file_type}")
                 responses.append({'name': file.name, 'error': 'Unsupported file type'})
                 continue
             if file.size > 10 * 1024 * 1024:  # 10MB limit
+                logger.warning(f"File size exceeds 10MB for {file.name}: {file.size} bytes")
                 responses.append({'name': file.name, 'error': 'File size exceeds 10MB'})
                 continue
 
             try:
-                # Prepare data for serializer, including the original file object
+                # Clean filename for public_id (keep .pdf for PDFs)
+                name_without_ext = os.path.splitext(file.name)[0]                            
+                clean_name = re.sub(r'[^\w.-]', '', name_without_ext)
+                folder = f"documents/{timezone.now().strftime('%Y/%m/%d')}"
+                public_id = f"{folder}/{clean_name}"  # e.g. documents/2025/10/29/Naveen_Resume-1
+
+                # Prepare data for serializer
                 data = {
                     'name': file.name,
-                    'file': file,  # Pass the original file object
+                    'file': file,
+                    'file_type': file_type,
+                    'size': file.size,
+                    'public_id': public_id,  # Pass public_id with .pdf for PDFs
                 }
                 serializer = DocumentSerializer(data=data, context={'request': request})
                 if serializer.is_valid():
-                    serializer.save(user=request.user)  # Set user explicitly
+                    document = serializer.save(user=request.user)
+                    logger.info(f"Uploaded document {document.name} with public_id {document.file.public_id} for user {request.user.email}")
                     responses.append(serializer.data)
                 else:
                     logger.error(f"Serializer error for {file.name}: {serializer.errors}")
                     responses.append({'name': file.name, 'error': serializer.errors})
             except Exception as e:
                 logger.error(f"Upload failed for {file.name}: {str(e)}")
-                responses.append({'name': file.name, 'error': 'Upload failed'})
+                responses.append({'name': file.name, 'error': f'Upload failed: {str(e)}'})
 
         if all('error' in resp for resp in responses):
             return Response(responses, status=status.HTTP_400_BAD_REQUEST)
         return Response(responses, status=status.HTTP_201_CREATED)
+    
     
 class DocumentListView(APIView):
     permission_classes = [IsAuthenticated]
@@ -600,34 +613,116 @@ def extract_comparison_result(content, output_format='markdown'):
     return result
 
 
+import io
+import logging
+import requests
+import PyPDF2
+import docx
+import pandas as pd
+from django.core.exceptions import ValidationError  
+import cloudinary
+import cloudinary.uploader
+from cloudinary.utils import cloudinary_url
+
 def extract_document_content(document):
-    """Extract text content from a document based on its file type."""
-    file_path = document.file.path
-    file_type = document.file_type.lower()
+    """
+    Extract text content from a document stored in Cloudinary (raw resource).
 
-    if file_type == 'pdf':
-        with open(file_path, 'rb') as file:
-            reader = PyPDF2.PdfReader(file)
-            text = ''
-            for page in reader.pages:
-                text += page.extract_text() or ''
-            return text.strip() or 'No text content extracted'
+    Works with:
+        - public_id = "documents/2025/10/29/Naveen_Resume-1.pdf"   (with extension)
+        - public_id = "documents/2025/10/29/Naveen_Resume-1"     (without extension)
 
-    elif file_type in ['docx', 'doc']:
-        doc = docx.Document(file_path)
-        text = '\n'.join([para.text for para in doc.paragraphs if para.text.strip()])
-        return text.strip() or 'No text content extracted'
+    The function forces the correct `format=` when generating the signed URL.
+    """
+    try:
+        # ------------------------------------------------------------------
+        # 1. Normalise the public_id – Cloudinary stores it **without** the extension
+        # ------------------------------------------------------------------
+        public_id = document.file.public_id          # e.g. "documents/.../Naveen_Resume-1.pdf"
+        # Remove any trailing extension (pdf, docx, csv, xlsx, …)
+        public_id_base, _ = os.path.splitext(public_id)
+        logger.debug(f"Original public_id: {public_id} → base: {public_id_base}")
 
-    elif file_type == 'csv':
-        df = pd.read_csv(file_path)
-        return df.to_string() or 'No text content extracted'
+        # ------------------------------------------------------------------
+        # 2. Build a **signed** URL with the proper format
+        # ------------------------------------------------------------------
+        file_url, _ = cloudinary_url(
+            public_id_base,               # <-- extension-free id
+            resource_type="raw",
+            
+            type="upload",
+            format=document.file_type,    # <-- critical: pdf / docx / csv / xlsx
+        )
+        logger.debug(f"Fetching document from Cloudinary: {file_url}")
 
-    elif file_type == 'xlsx':
-        df = pd.read_excel(file_path)
-        return df.to_string() or 'No text content extracted'
+        # ------------------------------------------------------------------
+        # 3. Download the raw bytes
+        # ------------------------------------------------------------------
+        response = requests.get(file_url)
+        response.raise_for_status()
 
-    else:
-        return 'Unsupported file type'
+        file_type = document.file_type.lower()
+
+        # ------------------------------------------------------------------
+        # 4. Extract text according to file type
+        # ------------------------------------------------------------------
+        if file_type == "pdf":
+            with io.BytesIO(response.content) as f:
+                reader = PyPDF2.PdfReader(f)
+                text = "\n".join(
+                    page.extract_text() or "" for page in reader.pages
+                ).strip()
+                if not text:
+                    logger.warning(f"No text extracted from PDF {document.name}")
+                logger.info(f"PDF preview (≤200 chars): {text[:200]}")
+                return text or "No text content extracted"
+
+        elif file_type in ("docx", "doc"):
+            with io.BytesIO(response.content) as f:
+                doc = docx.Document(f)
+                text = "\n".join(p.text for p in doc.paragraphs if p.text.strip()).strip()
+                logger.info(f"DOCX preview (≤200 chars): {text[:200]}")
+                return text or "No text content extracted"
+
+        elif file_type == "csv":
+            with io.BytesIO(response.content) as f:
+                df = pd.read_csv(f)
+                text = df.to_string()
+                logger.info(f"CSV preview (≤200 chars): {text[:200]}")
+                return text or "No text content extracted"
+
+        elif file_type == "xlsx":
+            with io.BytesIO(response.content) as f:
+                df = pd.read_excel(f)
+                text = df.to_string()
+                logger.info(f"XLSX preview (≤200 chars): {text[:200]}")
+                return text or "No text content extracted"
+
+        else:
+            logger.error(f"Unsupported file type: {file_type}")
+            return "Unsupported file type"
+
+    # ----------------------------------------------------------------------
+    # 5. Specific Cloudinary errors – give a clear message to the caller
+    # ----------------------------------------------------------------------
+    except requests.exceptions.HTTPError as e:
+        if e.response.status_code == 401:
+            logger.error(f"Unauthorized Cloudinary access for {document.name}: {e}")
+            raise ValidationError(
+                f"Unauthorized access to document in Cloudinary: {public_id_base}. "
+                "Check Cloudinary credentials."
+            )
+        if e.response.status_code == 404:
+            logger.error(f"Document not found in Cloudinary for {document.name}: {e}")
+            raise ValidationError(
+                f"Document file not found in Cloudinary: {public_id_base}"
+            )
+        logger.error(f"Failed to fetch {document.name}: {e}")
+        raise
+
+    except Exception as e:
+        logger.error(f"Failed to extract content from {document.name}: {e}")
+        raise
 
 def extract_insights(response_content, output_format='markdown'):
     """Extract structured insights from AI response."""

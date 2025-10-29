@@ -26,26 +26,27 @@ class LoginSerializer(serializers.Serializer):
 
 
 class DocumentSerializer(serializers.ModelSerializer):
-    file_url = serializers.SerializerMethodField()
-
     class Meta:
         model = Document
-        fields = ['id', 'name', 'size', 'file_type', 'uploaded_at', 'file', 'file_url']
-        read_only_fields = ['id', 'uploaded_at', 'file_type', 'size']
+        fields = ['id', 'name', 'file', 'file_type', 'size', 'uploaded_at', 'user']
+        read_only_fields = ['id', 'uploaded_at', 'user', 'size', 'file_type']
 
-    def get_file_url(self, obj):
-        request = self.context.get('request')
-        if obj.file and hasattr(obj.file, 'url') and request:
-            return request.build_absolute_uri(obj.file.url)
-        return None  # Return None if file or request is unavailable
+    def validate_file(self, value):
+        allowed_types = ['pdf', 'docx', 'doc', 'csv', 'xlsx']
+        file_type = value.name.split('.')[-1].lower()
+        if file_type not in allowed_types:
+            raise serializers.ValidationError('Unsupported file type')
+        if value.size > 10 * 1024 * 1024:
+            raise serializers.ValidationError('File size exceeds 10MB')
+        return value
 
     def create(self, validated_data):
-        validated_data['user'] = self.context['request'].user
-        file = validated_data['file']
-        validated_data['file_type'] = file.name.split('.')[-1].lower()
-        validated_data['size'] = file.size
-        return super().create(validated_data)
-    
+        public_id = validated_data.pop('public_id', None)
+        document = Document(**validated_data)
+        if public_id:
+            document.file.public_id = public_id  # Set public_id before saving
+        document.save()
+        return document
 
 
 class ChatHistorySerializer(serializers.ModelSerializer):

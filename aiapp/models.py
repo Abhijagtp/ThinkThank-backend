@@ -1,6 +1,7 @@
 from django.contrib.auth.models import AbstractUser
 from django.db import models
 from django.utils import timezone
+from cloudinary.models import CloudinaryField
 
 class CustomUser(AbstractUser):
     email = models.EmailField(unique=True)
@@ -14,10 +15,13 @@ class CustomUser(AbstractUser):
     def __str__(self):
         return self.email
 
-
 class Document(models.Model):
     user = models.ForeignKey(CustomUser, on_delete=models.CASCADE, related_name='documents')
-    file = models.FileField(upload_to='documents/%Y/%m/%d/')
+    file = CloudinaryField(
+        resource_type='raw',  # For PDFs and documents
+        allowed_formats=['pdf', 'docx'],  # Restrict to document types
+        blank=True,  # Allow null/empty for form compatibility
+    )
     name = models.CharField(max_length=255)
     size = models.BigIntegerField()  # File size in bytes
     uploaded_at = models.DateTimeField(auto_now_add=True)
@@ -28,8 +32,18 @@ class Document(models.Model):
 
     def __str__(self):
         return f"{self.name} ({self.user.email})"
-    
 
+    def save(self, *args, **kwargs):
+        if self.file:
+            # Validate file size (10MB limit for Cloudinary free tier)
+            if self.file.size > 10 * 1024 * 1024:
+                raise ValueError("File size exceeds 10MB limit")
+            self.size = self.file.size  # Auto-set size
+            self.file_type = self.file.name.split('.')[-1].lower()  # Set file_type
+            # Dynamically set folder based on uploaded_at or current date
+            folder = f"documents/{timezone.now().strftime('%Y/%m/%d')}/"
+            self.file.folder = folder  # Set folder dynamically
+        super().save(*args, **kwargs)
 
 class ChatHistory(models.Model):
     user = models.ForeignKey(CustomUser, on_delete=models.CASCADE)
